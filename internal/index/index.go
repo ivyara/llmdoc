@@ -20,12 +20,16 @@ type Entry struct {
 
 // Index is the in-memory representation of the llmdoc index file.
 type Index struct {
-	Files map[string]*Entry `yaml:"files"`
+	Files       map[string]*Entry `yaml:"files"`
+	Directories map[string]*Entry `yaml:"directories"`
 }
 
 // New returns an empty Index.
 func New() *Index {
-	return &Index{Files: make(map[string]*Entry)}
+	return &Index{
+		Files:       make(map[string]*Entry),
+		Directories: make(map[string]*Entry),
+	}
 }
 
 // Load reads an index file from path. Returns a new empty Index if the file
@@ -45,6 +49,9 @@ func Load(path string) (*Index, error) {
 	}
 	if idx.Files == nil {
 		idx.Files = make(map[string]*Entry)
+	}
+	if idx.Directories == nil {
+		idx.Directories = make(map[string]*Entry)
 	}
 	return &idx, nil
 }

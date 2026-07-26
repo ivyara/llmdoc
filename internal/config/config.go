@@ -27,8 +27,9 @@ type Config struct {
 	IndexFile string `yaml:"index_file"` // only used when mode: index
 
 	// Behaviour
-	Concurrency int  `yaml:"concurrency"`
-	Force       bool `yaml:"force"`
+	Concurrency                int  `yaml:"concurrency"`
+	Force                      bool `yaml:"force"`
+	GenerateDirectorySummaries bool `yaml:"generate_directory_summaries"`
 }
 
 var defaults = Config{
@@ -49,7 +50,8 @@ var defaults = Config{
 		"**/*.pb.go", "**/*.generated.go",
 		".llmdoc/", ".llmdoc.yaml", ".llmdoc.yml",
 	},
-	Concurrency: 4,
+	Concurrency:                4,
+	GenerateDirectorySummaries: true,
 }
 
 // Load reads configuration from the given path (or auto-discovers it), then
@@ -120,6 +122,8 @@ func applyDefaults(cfg *Config) {
 	if cfg.IndexFile == "" {
 		cfg.IndexFile = defaults.IndexFile
 	}
+	// GenerateDirectorySummaries defaults to true; we start with it from defaults,
+	// so it's set correctly whether or not it appears in the YAML file.
 }
 
 // resolveAPIKey fills cfg.APIKey from environment variables when not set in config.
@@ -196,6 +200,10 @@ mode: index
 
 # Index file path (only used when mode: index)
 index_file: .llmdoc/index.yaml
+
+# Generate directory-level summaries (only applies to index mode; ignored for inline mode)
+# When enabled, llmdoc will synthesize summaries for directories with 2+ annotated files
+generate_directory_summaries: true
 
 # Force re-annotation even when file hash is unchanged
 force: false

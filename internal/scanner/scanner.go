@@ -48,7 +48,7 @@ func Walk(root string, cfg *config.Config) ([]FileInfo, error) {
 			ignore = append(ignore, readGitignore(path, rel)...)
 		}
 
-		if matchesIgnore(rel, d.IsDir(), ignore) {
+		if MatchesIgnore(rel, d.IsDir(), ignore) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -119,8 +119,8 @@ func globMatch(pattern, name string) bool {
 	return err == nil && matched
 }
 
-// matchesIgnore reports whether path matches any of the ignore patterns.
-func matchesIgnore(rel string, isDir bool, patterns []string) bool {
+// MatchesIgnore reports whether path matches any of the ignore patterns.
+func MatchesIgnore(rel string, isDir bool, patterns []string) bool {
 	// Normalize to forward slashes for consistent matching
 	rel = filepath.ToSlash(rel)
 	if isDir {

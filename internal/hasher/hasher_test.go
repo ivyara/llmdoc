@@ -176,3 +176,162 @@ func TestHashAnnotatedFileStableWhenOnlyBlockChanges(t *testing.T) {
 		t.Error("hash should be stable when only the block comment changes")
 	}
 }
+
+// Directory hash tests
+
+func TestComputeDirectoryHashOrderIndependence(t *testing.T) {
+	// Same files in different orders should produce the same hash
+	hashes1 := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+		"file3.go": "hash3",
+	}
+
+	hashes2 := map[string]string{
+		"file3.go": "hash3",
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes1)
+	hash2 := ComputeDirectoryHash(hashes2)
+
+	if hash1 != hash2 {
+		t.Errorf("order-independence failed: %q != %q", hash1, hash2)
+	}
+}
+
+func TestComputeDirectoryHashDeterminism(t *testing.T) {
+	// Same input should always produce the same hash
+	hashes := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes)
+	hash2 := ComputeDirectoryHash(hashes)
+
+	if hash1 != hash2 {
+		t.Errorf("determinism failed: %q != %q", hash1, hash2)
+	}
+}
+
+func TestComputeDirectoryHashChangesWhenFilesChange(t *testing.T) {
+	hashes1 := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+	}
+
+	hashes2 := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2_modified",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes1)
+	hash2 := ComputeDirectoryHash(hashes2)
+
+	if hash1 == hash2 {
+		t.Errorf("expected different hashes when file changes, got %q", hash1)
+	}
+}
+
+func TestComputeDirectoryHashChangesWhenFileAdded(t *testing.T) {
+	hashes1 := map[string]string{
+		"file1.go": "hash1",
+	}
+
+	hashes2 := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes1)
+	hash2 := ComputeDirectoryHash(hashes2)
+
+	if hash1 == hash2 {
+		t.Errorf("expected different hashes when file is added, got %q", hash1)
+	}
+}
+
+func TestComputeDirectoryHashChangesWhenFileRemoved(t *testing.T) {
+	hashes1 := map[string]string{
+		"file1.go": "hash1",
+		"file2.go": "hash2",
+	}
+
+	hashes2 := map[string]string{
+		"file1.go": "hash1",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes1)
+	hash2 := ComputeDirectoryHash(hashes2)
+
+	if hash1 == hash2 {
+		t.Errorf("expected different hashes when file is removed, got %q", hash1)
+	}
+}
+
+func TestComputeDirectoryHashEmptyDirectory(t *testing.T) {
+	// Empty directory should have a consistent hash (empty string hashed)
+	hashes := map[string]string{}
+
+	hash1 := ComputeDirectoryHash(hashes)
+	hash2 := ComputeDirectoryHash(hashes)
+
+	if hash1 != hash2 {
+		t.Errorf("empty directory hash should be deterministic: %q != %q", hash1, hash2)
+	}
+
+	// Non-empty should differ from empty
+	nonEmpty := map[string]string{"file.go": "hash"}
+	hash3 := ComputeDirectoryHash(nonEmpty)
+	if hash1 == hash3 {
+		t.Errorf("empty directory hash should differ from non-empty")
+	}
+}
+
+func TestComputeDirectoryHashFormatting(t *testing.T) {
+	// Verify the hash is a valid hex string
+	hashes := map[string]string{
+		"file1.go": "abc123",
+		"file2.go": "def456",
+	}
+
+	hash := ComputeDirectoryHash(hashes)
+
+	// SHA256 hex is 64 characters
+	if len(hash) != 64 {
+		t.Errorf("expected 64-char hex hash, got %d chars: %q", len(hash), hash)
+	}
+
+	// All characters should be valid hex
+	for _, ch := range hash {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			t.Errorf("invalid hex character in hash: %q", string(ch))
+		}
+	}
+}
+
+func TestComputeDirectoryHashWithComplexPaths(t *testing.T) {
+	// Test with nested paths
+	hashes := map[string]string{
+		"internal/scanner/scanner.go":      "hash1",
+		"internal/scanner/scanner_test.go": "hash2",
+		"internal/parser/parser.go":        "hash3",
+	}
+
+	hash1 := ComputeDirectoryHash(hashes)
+
+	// Reorder and verify order-independence
+	hashes2 := map[string]string{
+		"internal/parser/parser.go":        "hash3",
+		"internal/scanner/scanner_test.go": "hash2",
+		"internal/scanner/scanner.go":      "hash1",
+	}
+
+	hash2 := ComputeDirectoryHash(hashes2)
+
+	if hash1 != hash2 {
+		t.Errorf("complex paths: order-independence failed")
+	}
+}

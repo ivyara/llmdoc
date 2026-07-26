@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,9 +51,10 @@ func (s Status) String() string {
 	}
 }
 
-// Result is the outcome of attempting to annotate a single file.
+// Result is the outcome of attempting to annotate a single file or directory.
 type Result struct {
 	File            scanner.FileInfo
+	DirectoryPath   string // non-empty for directory results
 	Status          Status
 	TokensUsed      llm.TokenUsage
 	EstimatedTokens int // estimated input tokens; populated during dry-run instead of TokensUsed
@@ -131,7 +133,93 @@ func Run(ctx context.Context, root string, cfg *config.Config, provider llm.Prov
 		}
 		wg.Wait()
 
-		// Save the index after all files are processed.
+		// Phase 2: Process directories after all files (index mode only)
+		if cfg.Mode == "index" {
+			// Snapshot file entries for directory aggregation (safe after Phase 1 completes)
+			fileEntries := make(map[string]*index.Entry)
+			if idx != nil {
+				idxMu.Lock()
+				for path, entry := range idx.Files {
+					fileEntries[path] = entry
+				}
+				idxMu.Unlock()
+			}
+
+			// Process directories only if the flag is enabled
+			if cfg.GenerateDirectorySummaries {
+				// Collect directories and process them
+				dirsToProcess := collectDirectories(files, cfg, fileEntries)
+				if len(dirsToProcess) > 0 {
+					// Pre-compute which directories need regeneration while holding the lock
+					// to avoid data races. Snapshot existing directory hashes.
+					existingDirHashes := make(map[string]string)
+					if idx != nil {
+						idxMu.Lock()
+						for path, entry := range idx.Directories {
+							if entry != nil {
+								existingDirHashes[path] = entry.Hash
+							}
+						}
+						idxMu.Unlock()
+					}
+
+					// Separate directories into those needing regeneration and those unchanged
+					var dirsNeedingRegen []DirectoryToProcess
+					var dirsUnchanged []DirectoryToProcess
+					for _, d := range dirsToProcess {
+						if cfg.Force || existingDirHashes[d.RelPath] != d.AggregatedHash {
+							dirsNeedingRegen = append(dirsNeedingRegen, d)
+						} else {
+							dirsUnchanged = append(dirsUnchanged, d)
+						}
+					}
+
+					// Send unchanged directory results
+					for _, d := range dirsUnchanged {
+						ch <- Result{
+							DirectoryPath: d.RelPath,
+							Status:        StatusUnchanged,
+						}
+					}
+
+					// Process directories needing regeneration concurrently
+					if len(dirsNeedingRegen) > 0 {
+						sem := make(chan struct{}, cfg.Concurrency)
+						var dirWg sync.WaitGroup
+						for _, dir := range dirsNeedingRegen {
+							dirWg.Add(1)
+							sem <- struct{}{}
+							go func(d DirectoryToProcess) {
+								defer dirWg.Done()
+								defer func() { <-sem }()
+
+								// Generate directory summary via LLM
+								result := processDirectory(ctx, d, cfg, provider, opts, idx, &idxMu)
+								ch <- result
+							}(dir)
+						}
+						dirWg.Wait()
+					}
+				}
+			}
+
+			// Prune stale directory entries (directories that no longer qualify)
+			if idx != nil && !opts.DryRun {
+				// Rebuild the set of qualifying directories
+				qualifyingDirs := make(map[string]bool)
+				for _, d := range collectDirectories(files, cfg, fileEntries) {
+					qualifyingDirs[d.RelPath] = true
+				}
+				// Remove entries for directories that no longer qualify
+				for path := range idx.Directories {
+					if !qualifyingDirs[path] {
+						delete(idx.Directories, path)
+					}
+				}
+			}
+		}
+
+		// Save the index after all files and directories are processed.
 		if idx != nil && !opts.DryRun {
 			if saveErr := index.Save(cfg.IndexFile, idx); saveErr != nil {
 				ch <- Result{Status: StatusError, Err: fmt.Errorf("saving index: %w", saveErr)}
@@ -244,7 +332,9 @@ func processFile(ctx context.Context, file scanner.FileInfo, cfg *config.Config,
 	}
 
 	if opts.DryRun {
-		return Result{File: file, Status: status, EstimatedTokens: pricing.EstimateInputTokens(stripped)}, nil
+		// In dry-run, return an entry with hash (for directory aggregation) but no summary
+		dryEntry := &index.Entry{Hash: currentHash, Version: 1}
+		return Result{File: file, Status: status, EstimatedTokens: pricing.EstimateInputTokens(stripped)}, dryEntry
 	}
 
 	req := llm.SummaryRequest{
@@ -278,4 +368,75 @@ func processFile(ctx context.Context, file scanner.FileInfo, cfg *config.Config,
 	}
 
 	return Result{File: file, Status: status, TokensUsed: usage}, nil
+}
+
+// processDirectory generates a summary for a directory by aggregating its file summaries.
+// It's called during Phase 2 after all file processing is complete.
+func processDirectory(ctx context.Context, dir DirectoryToProcess, cfg *config.Config, provider llm.Provider, opts Options, idx *index.Index, idxMu *sync.Mutex) Result {
+	// Collect all file summaries for this directory
+	idxMu.Lock()
+	var fileSummaries []string
+	for _, file := range dir.Files {
+		if entry, ok := idx.Files[file.RelPath]; ok && entry != nil && entry.Summary != "" {
+			fileSummaries = append(fileSummaries, entry.Summary)
+		}
+	}
+	idxMu.Unlock()
+
+	// In dry-run mode, estimate tokens without calling LLM
+	if opts.DryRun {
+		// Estimate input tokens from file summaries (rough: ~5 tokens per word)
+		totalChars := 0
+		for _, summary := range fileSummaries {
+			totalChars += len(summary)
+		}
+		estimatedInputTokens := (totalChars / 4) + 200 // ~5 tokens per word + context overhead
+		estimatedOutputTokens := pricing.SummaryOutputTokens
+
+		return Result{
+			DirectoryPath:   dir.RelPath,
+			Status:          StatusCreated,
+			EstimatedTokens: estimatedInputTokens + estimatedOutputTokens,
+		}
+	}
+
+	// Construct the file content as the directory prompt
+	// The LLM will treat this as a "file" to summarize
+	fileContent := fmt.Sprintf(`Directory structure summary request.
+
+Files in this directory:
+%s
+
+Write a concise summary of this directory in 3-5 sentences, describing its collective responsibilities and purpose based on the files it contains.`, strings.Join(fileSummaries, "\n"))
+
+	// Call LLM to generate summary
+	req := llm.SummaryRequest{
+		FilePath:    dir.RelPath,
+		FileContent: fileContent,
+		Language:    "Summary Aggregation",
+	}
+	summary, usage, err := provider.Summarize(ctx, req)
+	if err != nil {
+		return Result{DirectoryPath: dir.RelPath, Status: StatusError, Err: fmt.Errorf("generating directory summary: %w", err)}
+	}
+
+	// Store in index
+	meta := newMeta(summary, dir.AggregatedHash, cfg.Model)
+	entry := meta.toEntry()
+
+	idxMu.Lock()
+	isUpdate := idx.Directories[dir.RelPath] != nil
+	idx.Directories[dir.RelPath] = entry
+	idxMu.Unlock()
+
+	status := StatusCreated
+	if isUpdate {
+		status = StatusUpdated
+	}
+
+	return Result{
+		DirectoryPath: dir.RelPath,
+		Status:        status,
+		TokensUsed:    usage,
+	}
 }

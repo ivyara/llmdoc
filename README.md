@@ -31,11 +31,12 @@ When you paste a large codebase into an LLM, you pay for tokens on every file �
 
 - **Incremental** — only files that have actually changed call the LLM
 - **Two storage modes** — *inline* (summaries live in source files) or *index* (summaries in a separate YAML file; source files never modified)
+- **Directory summaries** (index mode) — automatically generate high-level summaries for directories with 2+ files, synthesizing file-level information into directory-level insights
 - **50+ languages** — Go, TypeScript, Python, Rust, Java, Ruby, SQL, YAML, and more
 - **Multiple providers** — Anthropic and OpenAI out of the box; easy to extend
 - **CI-ready** — `llmdoc check` exits 1 on stale annotations, with no API key required
 - **`.gitignore`-aware** — respects root and nested `.gitignore` files automatically
-- **Cost estimation** — `--dry-run` shows a projected cost before you spend a token
+- **Cost estimation** — `--dry-run` shows a projected cost before you spend a token, including directory summary generation
 - **Self-updating** — `llmdoc update` fetches and installs the latest release in place
 
 ## Installation
@@ -145,15 +146,19 @@ Scans `path` (default: `.`) and adds or updates llmdoc annotations for every mat
   created    internal/auth/jwt.go
   created    internal/auth/middleware.go
   updated    cmd/root.go
+  created    internal/auth/
+  unchanged  cmd/
 
-Cost estimate for 3 file(s):
+Cost estimate for 4 file(s) + 1 directory(s):
   model  claude-sonnet-4-6  ($3.00 in / $15.00 out per MTok)
-  tokens ~12,450 input / ~450 output
-  cost   ~$0.0444
+  tokens ~14,800 input / ~520 output
+  cost   ~$0.0528
   prices from https://www.anthropic.com/pricing — actual usage may vary
 
 Summary: 2 created, 1 updated, 1 unchanged, 0 errors  (dry run)
 ```
+
+**Note:** Dry-run output includes directories with 2+ annotated files (only in index mode) in the file count and cost estimate, ensuring accurate cost projections before running `annotate`.
 
 ### `check`
 
@@ -181,6 +186,21 @@ Exports all annotations as a single document, suitable for pasting into an LLM c
 | `--output`, `-o` | stdout | Write to a file instead of stdout |
 | `--include-content` | `false` | Include full file content alongside summaries |
 | `--no-tree` | `false` | Omit the directory tree from Markdown output |
+| `--directory` | all | Scope output to a specific directory and subdirectories |
+
+#### Directory Summaries
+
+When using index mode, `llmdoc` automatically generates summaries for directories containing 2 or more annotated files. These summaries synthesize file summaries into a concise overview of the directory's responsibilities.
+
+**How it works:**
+- After all files are annotated, directories with 2+ files are identified (single-file directories are excluded)
+- The LLM synthesizes file summaries into 3-5 bullets describing the directory's purpose
+- Summaries are stored in the index with a trailing slash (e.g., `internal/auth/`) to differentiate them from file entries
+- Hash-based change detection skips directories that haven't changed
+- Directory summaries are included in `dump` output and can be scoped with `--directory`
+
+**Configuration:**
+Set `generate_directory_summaries: true` in `.llmdoc.yaml` (default). Disable with `false` to skip directory processing.
 
 ### `init`
 
@@ -268,6 +288,9 @@ concurrency: 4
 
 # Force re-annotation even when the file hash is unchanged
 force: false
+
+# Generate summaries for directories with 2+ annotated files (index mode only)
+generate_directory_summaries: true
 ```
 
 ### API key resolution
@@ -367,6 +390,7 @@ To add a language, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-language).
 3. **Diff** — the current hash is compared to the stored hash (in the index or in the file's own header). Unchanged files are skipped.
 4. **Summarise** — new or changed files are sent to the LLM with a system prompt requesting a 2–4 sentence summary. If a previous summary exists, it is included so the model can produce an incremental update.
 5. **Store** — the summary and hash are written back, either as a comment header at the top of the source file (inline mode) or to the index YAML (index mode).
+6. **Directory summaries** (index mode only) — after file annotation completes, directories with 2+ annotated files are identified. The LLM synthesizes their file summaries into 3–5 bullet points describing the directory's purpose. Directories are hashed based on their constituent files, so unchanged directories skip LLM calls. These summaries are stored in the index with trailing slashes to distinguish them from files.
 
 ## Contributing
 

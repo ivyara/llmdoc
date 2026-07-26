@@ -46,6 +46,7 @@ main.go                        Entry point; injects version string at build time
 cmd/                           Cobra subcommands (annotate, check, dump, init, update)
 internal/
   annotator/annotator.go       Orchestration: goroutine pool, change detection, write-back
+  annotator/directories.go     Computes aggregated hashes, change detection
   comment/
     block.go                   Block struct, Render(), Parse(), IsValidSentinelLine()
     language.go                Extension → CommentSyntax map (add new languages here)

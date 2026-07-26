@@ -24,12 +24,20 @@ type Entry struct {
 	Content string // raw file content (only populated when includeContent is true)
 }
 
+// DirectoryEntry holds parsed information for a directory.
+type DirectoryEntry struct {
+	RelPath string // relative path with trailing slash (e.g., "internal/scanner/")
+	Summary string // multi-line bullet points
+	Hash    string
+}
+
 // Options controls dump output.
 type Options struct {
 	Format         string // "markdown", "xml", "plain"
 	IncludeContent bool
 	NoTree         bool
 	Output         string // file path or "" for stdout
+	Directory      string // optional scoping path (e.g., "internal/scanner")
 }
 
 // Run collects all annotated files under root and writes the summary document.
@@ -44,8 +52,20 @@ func Run(root string, cfg *config.Config, opts Options) error {
 		return err
 	}
 
+	// Load directories if available
+	directories, _ := loadDirectories(cfg)
+
+	// Apply directory scoping if requested
+	if opts.Directory != "" {
+		entries = filterByScope(entries, opts.Directory)
+		directories = filterDirectoriesByScope(directories, opts.Directory)
+	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].File.RelPath < entries[j].File.RelPath
+	})
+	sort.Slice(directories, func(i, j int) bool {
+		return directories[i].RelPath < directories[j].RelPath
 	})
 
 	var w io.Writer = os.Stdout
@@ -67,11 +87,11 @@ func Run(root string, cfg *config.Config, opts Options) error {
 
 	switch opts.Format {
 	case "xml":
-		return renderXML(w, root, entries, annotated, opts)
+		return renderXML(w, root, entries, directories, annotated, opts)
 	case "plain":
-		return renderPlain(w, root, entries, annotated, opts)
+		return renderPlain(w, root, entries, directories, annotated, opts)
 	default:
-		return renderMarkdown(w, root, entries, annotated, opts)
+		return renderMarkdown(w, root, entries, directories, annotated, opts)
 	}
 }
 
@@ -124,8 +144,71 @@ func loadEntries(files []scanner.FileInfo, cfg *config.Config, includeContent bo
 	return entries, nil
 }
 
+// loadDirectories loads directory summaries from the index.
+// Directory summaries are only stored in index mode.
+func loadDirectories(cfg *config.Config) ([]DirectoryEntry, error) {
+	if cfg.Mode != "index" {
+		// Directory summaries are only available in index mode
+		return []DirectoryEntry{}, nil
+	}
+
+	idx, err := index.Load(cfg.IndexFile)
+	if err != nil {
+		return []DirectoryEntry{}, nil // silently skip if index doesn't load
+	}
+
+	var dirs []DirectoryEntry
+	for path, entry := range idx.Directories {
+		if entry != nil && entry.Summary != "" {
+			dirs = append(dirs, DirectoryEntry{
+				RelPath: path,
+				Summary: entry.Summary,
+				Hash:    entry.Hash,
+			})
+		}
+	}
+	return dirs, nil
+}
+
+// filterByScope filters entries to only include files within the specified scope.
+func filterByScope(entries []Entry, scope string) []Entry {
+	scope = filepath.ToSlash(scope)
+	if !strings.HasSuffix(scope, "/") {
+		scope += "/"
+	}
+
+	var filtered []Entry
+	for _, e := range entries {
+		path := filepath.ToSlash(e.File.RelPath)
+		// Include if path is under scope or is scope itself (without trailing slash)
+		if strings.HasPrefix(path, scope) || path == strings.TrimSuffix(scope, "/") {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
+// filterDirectoriesByScope filters directories to only include those within the specified scope.
+func filterDirectoriesByScope(dirs []DirectoryEntry, scope string) []DirectoryEntry {
+	scope = filepath.ToSlash(scope)
+	if !strings.HasSuffix(scope, "/") {
+		scope += "/"
+	}
+
+	var filtered []DirectoryEntry
+	for _, d := range dirs {
+		// Directory paths end with "/" - compare accordingly
+		// Include if directory matches scope or is under scope
+		dirPath := d.RelPath
+		if dirPath == scope || strings.HasPrefix(dirPath, scope) {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
 // renderMarkdown writes the Markdown dump format.
-func renderMarkdown(w io.Writer, root string, entries []Entry, annotated int, opts Options) error {
+func renderMarkdown(w io.Writer, root string, entries []Entry, directories []DirectoryEntry, annotated int, opts Options) error {
 	abs, _ := filepath.Abs(root)
 	fmt.Fprintf(w, "# Codebase Summary\n\n")
 	fmt.Fprintf(w, "Generated: %s | Root: %s | %d / %d files annotated\n\n",
@@ -135,6 +218,19 @@ func renderMarkdown(w io.Writer, root string, entries []Entry, annotated int, op
 		fmt.Fprintf(w, "## Directory Tree\n\n```\n")
 		fmt.Fprintln(w, buildTree(entries))
 		fmt.Fprintf(w, "```\n\n---\n\n")
+	}
+
+	// Directory summaries section
+	if len(directories) > 0 {
+		fmt.Fprintf(w, "## Directory Summaries\n\n")
+		for _, d := range directories {
+			// Strip trailing slash for display (stored as "path/" internally)
+			// Note: Internal representation uses trailing slashes in index keys for consistent
+			// directory identification; display removes them for user-friendly readability
+			displayPath := strings.TrimSuffix(d.RelPath, "/")
+			fmt.Fprintf(w, "### %s\n\n%s\n\n", displayPath, d.Summary)
+		}
+		fmt.Fprintf(w, "---\n\n")
 	}
 
 	fmt.Fprintf(w, "## File Summaries\n\n")
@@ -154,7 +250,7 @@ func renderMarkdown(w io.Writer, root string, entries []Entry, annotated int, op
 }
 
 // renderXML writes the XML dump format, optimized for LLM tool use.
-func renderXML(w io.Writer, root string, entries []Entry, annotated int, opts Options) error {
+func renderXML(w io.Writer, root string, entries []Entry, directories []DirectoryEntry, annotated int, opts Options) error {
 	type xmlFile struct {
 		XMLName  xml.Name `xml:"file"`
 		Path     string   `xml:"path,attr"`
@@ -163,13 +259,20 @@ func renderXML(w io.Writer, root string, entries []Entry, annotated int, opts Op
 		Summary  string   `xml:"summary,omitempty"`
 		Content  string   `xml:"content,omitempty"`
 	}
+	type xmlDirectory struct {
+		XMLName xml.Name `xml:"directory"`
+		Path    string   `xml:"path,attr"`
+		Hash    string   `xml:"hash,attr,omitempty"`
+		Summary string   `xml:"summary,omitempty"`
+	}
 	type xmlCodebase struct {
-		XMLName   xml.Name  `xml:"codebase"`
-		Root      string    `xml:"root,attr"`
-		Generated string    `xml:"generated,attr"`
-		Annotated int       `xml:"annotated,attr"`
-		Total     int       `xml:"total,attr"`
-		Files     []xmlFile `xml:"file"`
+		XMLName   xml.Name       `xml:"codebase"`
+		Root      string         `xml:"root,attr"`
+		Generated string         `xml:"generated,attr"`
+		Annotated int            `xml:"annotated,attr"`
+		Total     int            `xml:"total,attr"`
+		Dirs      []xmlDirectory `xml:"directory"`
+		Files     []xmlFile      `xml:"file"`
 	}
 
 	cb := xmlCodebase{
@@ -177,6 +280,11 @@ func renderXML(w io.Writer, root string, entries []Entry, annotated int, opts Op
 		Generated: nowRFC3339(),
 		Annotated: annotated,
 		Total:     len(entries),
+	}
+	// Add directories to output (strip trailing slashes for display - they're stored internally with slashes)
+	for _, d := range directories {
+		xd := xmlDirectory{Path: strings.TrimSuffix(d.RelPath, "/"), Hash: d.Hash, Summary: d.Summary}
+		cb.Dirs = append(cb.Dirs, xd)
 	}
 	for _, e := range entries {
 		xf := xmlFile{Path: e.File.RelPath, Language: e.File.Language}
@@ -200,9 +308,17 @@ func renderXML(w io.Writer, root string, entries []Entry, annotated int, opts Op
 }
 
 // renderPlain writes a minimal plain text format.
-func renderPlain(w io.Writer, root string, entries []Entry, annotated int, opts Options) error {
+func renderPlain(w io.Writer, root string, entries []Entry, directories []DirectoryEntry, annotated int, opts Options) error {
 	fmt.Fprintf(w, "CODEBASE SUMMARY\nGenerated: %s\nRoot: %s\n%d/%d files annotated\n\n",
 		nowRFC3339(), root, annotated, len(entries))
+
+	if len(directories) > 0 {
+		fmt.Fprintf(w, "DIRECTORY SUMMARIES\n\n")
+		// Output directories with trailing slashes stripped for readability (stored internally with slashes)
+		for _, d := range directories {
+			fmt.Fprintf(w, "DIRECTORY: %s\n%s\n\n", strings.TrimSuffix(d.RelPath, "/"), d.Summary)
+		}
+	}
 
 	for _, e := range entries {
 		fmt.Fprintf(w, "FILE: %s (%s)\n", e.File.RelPath, e.File.Language)

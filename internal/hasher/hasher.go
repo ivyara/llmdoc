@@ -3,6 +3,7 @@ package hasher
 import (
 	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/tristanmatthias/llmdoc/internal/comment"
@@ -80,4 +81,40 @@ func ComputeHash(content []byte) string {
 	stripped := StripBlock(content)
 	h := sha256.Sum256(stripped)
 	return fmt.Sprintf("%x", h)
+}
+
+// ComputeDirectoryHash computes a stable, order-independent hash of a directory
+// based on the hashes of its direct-children files.
+//
+// The hash is computed from all file hashes in the provided map, sorted alphabetically
+// by path, joined as "{path} {hash}\n" lines, and then SHA256 hashed.
+//
+// The order of entries in the input map does not affect the output hash.
+func ComputeDirectoryHash(fileHashes map[string]string) string {
+	if len(fileHashes) == 0 {
+		return hashString("")
+	}
+
+	// Collect and sort paths for deterministic order
+	var paths []string
+	for path := range fileHashes {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	// Build the string to hash: "{path} {hash}\n" for each file
+	var lines []string
+	for _, path := range paths {
+		hash := fileHashes[path]
+		lines = append(lines, fmt.Sprintf("%s %s", path, hash))
+	}
+	joined := strings.Join(lines, "\n")
+
+	return hashString(joined)
+}
+
+// hashString computes SHA256 hash of a string and returns it as hex.
+func hashString(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", h[:])
 }

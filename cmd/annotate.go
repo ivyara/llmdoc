@@ -66,7 +66,11 @@ re-annotate all files regardless.`,
 		for r := range resultsCh {
 			results = append(results, r)
 			if prog != nil {
-				prog.update(len(results), r.File.RelPath)
+				path := r.File.RelPath
+				if path == "" {
+					path = r.DirectoryPath + " (directory)"
+				}
+				prog.update(len(results), path)
 			}
 		}
 
@@ -76,7 +80,15 @@ re-annotate all files regardless.`,
 
 		// Sort by path for deterministic output.
 		sort.Slice(results, func(i, j int) bool {
-			return results[i].File.RelPath < results[j].File.RelPath
+			pathI := results[i].File.RelPath
+			if pathI == "" {
+				pathI = results[i].DirectoryPath
+			}
+			pathJ := results[j].File.RelPath
+			if pathJ == "" {
+				pathJ = results[j].DirectoryPath
+			}
+			return pathI < pathJ
 		})
 
 		counts := map[annotator.Status]int{}
@@ -89,10 +101,14 @@ re-annotate all files regardless.`,
 			if !shouldPrint(quiet, verbose, r.Status) {
 				continue
 			}
+			path := r.File.RelPath
+			if path == "" {
+				path = r.DirectoryPath
+			}
 			if r.Status == annotator.StatusError {
-				fmt.Fprintf(os.Stderr, "  %-10s%s: %v\n", r.Status, r.File.RelPath, r.Err)
+				fmt.Fprintf(os.Stderr, "  %-10s%s: %v\n", r.Status, path, r.Err)
 			} else {
-				fmt.Printf("  %-10s%s\n", r.Status, r.File.RelPath)
+				fmt.Printf("  %-10s%s\n", r.Status, path)
 			}
 		}
 
@@ -203,23 +219,38 @@ func (p *progress) stop() {
 	fmt.Print("\r\033[K") // erase the spinner line
 }
 
-// printCostEstimate prints a projected cost for a dry-run based on file sizes
+// printCostEstimate prints a projected cost for a dry-run based on file and directory sizes
 // and the configured model's published pricing.
 func printCostEstimate(counts map[annotator.Status]int, results []annotator.Result, model string) {
-	toAnnotate := counts[annotator.StatusCreated] + counts[annotator.StatusUpdated]
-	if toAnnotate == 0 {
+	filesToAnnotate := counts[annotator.StatusCreated] + counts[annotator.StatusUpdated]
+	if filesToAnnotate == 0 {
 		return
 	}
 
-	var totalInputTokens int
+	// Separate file and directory results
+	var fileTokens, dirTokens int
+	directoriesCount := 0
 	for _, r := range results {
 		if r.Status == annotator.StatusCreated || r.Status == annotator.StatusUpdated {
-			totalInputTokens += r.EstimatedTokens
+			if r.DirectoryPath != "" {
+				dirTokens += r.EstimatedTokens
+				directoriesCount++
+			} else {
+				fileTokens += r.EstimatedTokens
+			}
 		}
 	}
-	totalOutputTokens := toAnnotate * pricing.SummaryOutputTokens
+	totalInputTokens := fileTokens + dirTokens
+	dirOutputTokens := directoriesCount * pricing.SummaryOutputTokens
+	totalOutputTokens := (filesToAnnotate-directoriesCount)*pricing.SummaryOutputTokens + dirOutputTokens
 
-	fmt.Printf("\nCost estimate for %d file(s):\n", toAnnotate)
+	// Show summary
+	if directoriesCount > 0 {
+		fmt.Printf("\nCost estimate for %d file(s) and %d director(ies):\n", filesToAnnotate-directoriesCount, directoriesCount)
+	} else {
+		fmt.Printf("\nCost estimate for %d file(s):\n", filesToAnnotate)
+	}
+
 	p, ok := pricing.ForModel(model)
 	if !ok {
 		fmt.Printf("  model  %s (no pricing data — check provider docs)\n", model)

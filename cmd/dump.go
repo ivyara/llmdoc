@@ -23,6 +23,7 @@ Example:
 		output, _ := cmd.Flags().GetString("output")
 		includeContent, _ := cmd.Flags().GetBool("include-content")
 		noTree, _ := cmd.Flags().GetBool("no-tree")
+		directory, _ := cmd.Flags().GetString("directory")
 
 		switch format {
 		case "markdown", "xml", "plain":
@@ -36,6 +37,7 @@ Example:
 			IncludeContent: includeContent,
 			NoTree:         noTree,
 			Output:         output,
+			Directory:      directory,
 		})
 	},
 }
@@ -45,5 +47,6 @@ func init() {
 	dumpCmd.Flags().StringP("output", "o", "", "write to file instead of stdout")
 	dumpCmd.Flags().Bool("include-content", false, "include full file content in output")
 	dumpCmd.Flags().Bool("no-tree", false, "omit directory tree from markdown output")
+	dumpCmd.Flags().String("directory", "", "scope output to specified directory and subdirectories")
 	rootCmd.AddCommand(dumpCmd)
 }

@@ -50,3 +50,6 @@ index_file: .llmdoc/index.yaml
 
 # Force re-annotation even when file hash is unchanged
 force: false
+
+# Generate directory-level summaries (only applies to index mode; ignored for inline mode)
+generate_directory_summaries: true
