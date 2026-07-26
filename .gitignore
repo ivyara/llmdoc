@@ -2,6 +2,7 @@
 llmdoc
 llmdoc-*
 dist/
+result
 
 # Environment — never commit secrets
 .env

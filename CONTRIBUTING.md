@@ -25,6 +25,20 @@ make lint
 
 The test suite does not call any LLM APIs — it uses in-process mock providers.
 
+### Development with nix
+
+If you use nix, you can run the following in order to work on the project:
+
+```bash
+git clone https://github.com/tristanmatthias/llmdoc.git
+cd llmdoc
+
+# Enter an enviroment with all dependencies pre-installed
+nix develop
+```
+
+From here you can develop the with the standard tools such as `make build` or `make test`. You can also run `nix build`.
+
 ## Project structure
 
 ```
